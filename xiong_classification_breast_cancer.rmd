@@ -1,0 +1,167 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(dplyr)
+library(rsample)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+library(mlbench)
+library(missForest)
+```
+```{r}
+data("BreastCancer")
+head(BreastCancer)
+```
+```{r}
+# drop unused vars
+cancer <- select(BreastCancer, -Id)
+
+# split into training and testing
+set.seed(123)
+cancer_split <- initial_split(cancer, prop = .8)
+cancer_train <- training(cancer_split)
+cancer_test  <- testing(cancer_split) 
+```
+
+## Classification Tree
+
+```{r}
+# default controls
+clft1 <- rpart(formula = Class ~ .,
+                data    = cancer_train,
+                method  = "class")
+
+print(clft1)
+```
+```{r}
+clft1_res <- summary(clft1)
+clft1_varImp <- clft1_res$variable.importance # also counts surrogates
+```
+
+```{r}
+rpart.plot(clft1)
+```
+```{r}
+plotcp(clft1)
+```
+```{r}
+# untrimmed tree
+clft2 <- rpart(formula = Class ~ .,
+                data    = cancer_train,
+                method  = "class",
+                control = rpart.control(minsplit = 2, minbucket = 1, cp = 0))
+
+plotcp(clft2)
+clft2$cptable
+```
+
+```{r}
+# trimmed tree
+cptable <- clft2$cptable
+cp_best <- cptable[2,"CP"]
+
+clft3 <- rpart(formula = Class ~ .,
+                data    = cancer_train,
+                method  = "class",
+                control = rpart.control(minsplit = 2, minbucket = 1, cp = cp_best))
+
+rpart.plot(clft3)
+```
+```{r}
+# predict on test set
+clft3_pred = predict(clft3, newdata = cancer_test, type = "class")
+
+# misclassification error
+confusionMatrix(data = clft3_pred, reference = cancer_test$Class)
+```
+```{r}
+#set.seed(123)
+# clfrf1 <- randomForest(
+#   formula = Class ~ .,
+#   data    = cancer_train
+# )
+
+sapply(cancer, function(x) {sum(is.na(x))})
+```
+```{r}
+# impute training set
+cancer_train_mf <- missForest(cancer_train)
+cancer_train_imp <- cancer_train_mf$ximp
+
+# impute testing set
+cancer_test_mf <- missForest(cancer_test)
+cancer_test_imp <- cancer_test_mf$ximp
+
+# train a forest with default settings
+set.seed(123)
+
+clf_rf1 <- randomForest(
+  formula = Class ~ .,
+  data    = cancer_train_imp
+)
+
+clf_rf1_pred <- predict(clf_rf1, cancer_test_imp)
+
+# misclassification error
+confusionMatrix(data = clf_rf1_pred, reference = cancer_test_imp$Class)
+```
+```{r}
+# plot OOB error
+oob_err <- clf_rf1$err.rate[,1]
+
+plot(x = seq_along(oob_err), oob_err, type = "l")
+plot(clf_rf1)
+```
+```{r}
+# tune RF
+oob_errs <- list()
+for (i in 1:9) {
+    clf_rf <- randomForest(
+      formula = Class ~ .,
+      data    = cancer_train_imp,
+      mtry = i
+    )
+    oob_errs[[i]] <- clf_rf$err.rate[,1]
+}
+
+cols <- colorRampPalette(c("red", "blue"))(9)
+for (i in 1:9) {
+    if (i == 1) {
+        plot(x = 1:500, y = oob_errs[[i]], type = "l", col = cols[i])
+    } else {
+        lines(x = 1:500, y = oob_errs[[i]], col = cols[i])
+    }
+    text(x = 510, y = oob_errs[[i]][500], labels = paste(i), col=cols[i])
+}
+```
+
+```{r}
+
+clf_rf2 <- randomForest(
+  formula = Class ~ .,
+  data = cancer_train_imp,
+  ntree = 200,
+  mtry = 3 
+)
+
+clf_rf2_pred <- predict(clf_rf2, cancer_test_imp)
+
+# misclassification error
+confusionMatrix(data = clf_rf2_pred, reference = cancer_test_imp$Class)
+```
+```{r}
+importance(clf_rf2)
+varImpPlot(clf_rf2) # plot the other kind of importance?
+```
+

@@ -1,0 +1,257 @@
+---
+title: "xiong_regression_tree_forest"
+author: "Kathy Xiong"
+date: "March 25, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(dplyr)
+library(rsample)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+```
+
+```{r, message=FALSE}
+cancer <- read_csv("data/cervical_cancer/risk_factors_cervical_cancer.csv", na = "?")
+head(cancer)
+
+sapply(cancer, function (x) {sum(is.na(x))})
+```
+```{r}
+# drop unused vars
+cancer <- cancer %>% select(-Hinselmann, -Schiller, -Citology)
+
+# specify dep var type
+cancer$Biopsy = factor(cancer$Biopsy, levels = c(0,1))
+
+# split into training and testing
+set.seed(123)
+cancer_split <- initial_split(cancer, prop = .8)
+cancer_train <- training(cancer_split)
+cancer_test  <- testing(cancer_split) 
+
+#sum(cancer_train$Biopsy) # 45
+#sum(cancer_test$Biopsy) # 10
+```
+
+## Classification Tree
+
+```{r}
+# default controls
+clft1 <- rpart(formula = Biopsy ~ .,
+                data    = cancer_train,
+                method  = "class",
+                control = rpart.control(minsplit = 2, 
+                                        minbucket = 1, 
+                                        cp = 0))
+```
+```{r}
+plotcp(clft1)
+```
+```{r}
+# try altering loss matrix
+loss = matrix(c(0, 15, 1, 0), nrow = 2) 
+# rows = true class, cols = assigned class
+# level 1 = no cancer, level 2 = cancer
+
+clft2 <- rpart(formula = Biopsy ~ .,
+                data    = cancer_train,
+                method  = "class",
+                parms = list(loss = loss),
+                control = rpart.control(minsplit = 2, 
+                                        minbucket = 1, 
+                                        cp = 0))
+
+plotcp(clft2)
+```
+```{r}
+print(clft2, cp = 0.01)
+```
+
+```{r}
+# try down sampling and up sampling on training set
+cancer_train_down <- downSample(x = select(cancer_train, -Biopsy), 
+                                y = cancer_train$Biopsy,
+                                yname = "Biopsy")
+
+clft3 <- rpart(formula = Biopsy ~ .,
+                data    = cancer_train_down,
+                method  = "class",
+                #parms = list(loss = loss),
+                control = rpart.control(minsplit = 2, 
+                                        minbucket = 1, 
+                                        cp = 0))
+
+plotcp(clft3) # lowest relative error > 1 - not good
+```
+
+```{r}
+# try up sampling and up sampling on training set
+cancer_train_up <- upSample(x = select(cancer_train, -Biopsy), 
+                            y = cancer_train$Biopsy,
+                            yname = "Biopsy")
+
+clft4 <- rpart(formula  = Biopsy ~ .,
+                data    = cancer_train_up,
+                method  = "class",
+                #parms = list(loss = loss),
+                control = rpart.control(minsplit = 2, 
+                                        minbucket = 1, 
+                                        cp = 0))
+
+plotcp(clft4) # lowest relative error > 1 - not good
+```
+```{r}
+printcp(clft4)
+```
+
+```{r}
+# proper subsampling - resample within CV
+
+# down sampling
+ctrl <- trainControl(method = "cv", 
+                     number = 10,
+                     #classProbs = TRUE,
+                     #summaryFunction = twoClassSummary,
+                     ## new option here:
+                     sampling = "down")
+
+set.seed(5627)
+down_inside <- train(x = as.data.frame(select(cancer_train, -Biopsy)),
+                     y = cancer_train$Biopsy,
+                     method = "rpart",
+                     control = rpart.control(minsplit = 2,
+                                        minbucket = 1,
+                                        cp = 0),
+                     #metric = "Sens",
+                     trControl = ctrl,
+                     tuneGrid = data.frame(cp=seq(1,0,length.out = 50)))
+
+# up sampling
+ctrl$sampling <- "up"
+
+set.seed(5627)
+up_inside <- train(x = as.data.frame(select(cancer_train, -Biopsy)),
+                     y = cancer_train$Biopsy,
+                     method = "rpart",
+                     control = rpart.control(minsplit = 2,
+                                        minbucket = 1,
+                                        cp = 0),
+                     #metric = "Sens",
+                     trControl = ctrl,
+                     tuneGrid = data.frame(cp=seq(1,0,length.out = 50)))
+
+down_inside
+up_inside
+```
+```{r}
+# random forest with resampling option
+randforest <- function(X_train, y_train, 
+                       n_trees = 100, 
+                       max_vars = floor(sqrt(ncol(X_train))),
+                       up_sample = F) {
+    
+    ## test input
+    # X_train = select(cancer_train, -Biopsy)
+    # y_train = cancer_train$Biopsy
+    # n_trees = 2
+    # max_vars = floor(sqrt(ncol(X_train)))
+    # up_sample = F
+    ## end test input
+       
+    pred_vars = names(X_train)
+    n = length(y_train)
+    
+    bts_models=list()
+    oob_pred = data.frame(matrix(nrow = n, ncol=n_trees))
+    #oob_freq = numeric(n) # number of times each obs is in OOB sample
+    idx = 1:n
+    
+    for (i in 1:n_trees) {
+        # select (with replacement) observations to be in the bootstrap sample
+        # unselected observations go in the out-of-bag sample
+        
+        #i = 2
+        
+        bts_idx = sample(idx,size=n,replace=T, set.seed(i+100))
+        oob_idx = setdiff(idx, bts_idx)
+        
+        # select (without replacement) variables to use
+        vars = sample(pred_vars, size=max_vars, replace=F, set.seed(i+200))
+        #print(paste("Vars used:", paste(vars)))
+        
+        # create bootstrap & OOB samples
+        X_bts = X_train[bts_idx,vars]
+        y_bts = y_train[bts_idx]
+        
+        X_oob = X_train[oob_idx,vars]
+        y_oob = y_train[oob_idx]
+        
+        #print(paste("Vars X_bts:", paste(names(X_bts))))
+        #print(paste("Vars X_bts:", paste(names(X_oob))))
+        
+        # oversample on the bootstrap sample
+        if (up_sample == T) {
+            bts_up = upSample(X_bts, y_bts, list = T)
+            X_bts = bts_up$x
+            y_bts = bts_up$y   
+        }
+        
+        # fit model on the bootstrap sample
+        new_model = rpart(formula = y ~ ., 
+                          data = data.frame(y=factor(y_bts,levels=c(0,1)), X_bts), 
+                          method  = "class",
+                          control = rpart.control(minsplit = 2,
+                                                  minbucket = 1,
+                                                  cp = 0))
+        
+        # save models
+        bts_models=c(bagged_models,list(new_model))
+        
+        # predict on the out-of-bag sample
+        new_pred = predict(new_model, 
+                           newdata = data.frame(y=factor(y_oob,levels=c(0,1)), X_oob),
+                           type = "class")
+        
+        #print(head(new_pred, 10))
+        #print(str(new_pred))
+        
+        # save OOB results
+        #oob_freq[oob_idx] = oob_freq[oob_idx] + 1
+        oob_pred[oob_idx, i] = new_pred
+    }
+    
+    # oob prediction
+    # drop index (column 1), and average over bootstrap samples
+    oob_pred_num = as.data.frame(lapply(oob_pred, as.numeric))
+    pred_num = round(rowMeans(oob_pred, na.rm=T))
+    pred = factor(pred_num, levels=c(0,1))
+    
+    # oob error
+    oob_error = mean((pred == y_train), na.rm = T)
+    
+    return(list(bagged_models, oob_error))
+    
+}
+
+rf = list()
+for (i in 50:100) {
+    rf[[i]] = randforest(X_train = select(cancer_train, -Biopsy),
+                         y_train = cancer_train$Biopsy,
+                         n_trees = i)
+}
+
+for (i in 50:100) {
+    print(rf[[i]][2])
+}
+
+```
+
+

@@ -1,0 +1,176 @@
+---
+title: "xiong_regression_tree_forest"
+author: "Kathy Xiong"
+date: "March 25, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(dplyr)
+library(rsample)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+```
+
+```{r, message=FALSE}
+student <- read_delim("data/student/student-por.csv", delim = ";")
+```
+```{r}
+# drop unused vars
+student <- student %>% select(-G1, -G2)
+
+# split into training and testing
+set.seed(123)
+student_split <- initial_split(student, prop = .8)
+student_train <- training(student_split)
+student_test  <- testing(student_split) 
+```
+
+## Regression Tree
+
+```{r}
+# default controls
+regt1 <- rpart(formula = G3 ~ .,
+                data    = student_train,
+                method  = "anova")
+```
+```{r}
+print(regt1)
+```
+```{r}
+rpart.plot(regt1)
+```
+
+```{r}
+plotcp(regt1)
+```
+```{r}
+# fit pruned tree
+cpt <- regt1$cptable
+cp <- cpt[cpt[,"nsplit"] == 1, "CP"]
+
+regt2 <- rpart(formula = G3 ~ .,
+               data    = student_train,
+               method  = "anova",
+               control = rpart.control(cp = cp))
+```
+```{r}
+# predict & score
+pred <- predict(regt2, newdata = student_test)
+postResample(pred = pred, obs = student_test$G3)
+
+mean((pred - student_test$G3)**2)
+```
+
+## Random Forest
+
+```{r}
+# source: https://www.r-bloggers.com/machine-learning-explained-bagging/
+# use default controls for rpart - tune later?
+
+# train on bootstrapped sample & predict on OOB sample
+pred_vars = setdiff(names(student_train),"G3")
+
+randforest <- function(n_model = 100, max_vars = floor(sqrt(length(pred_vars)))) {
+    
+    bagged_models=list()
+    train_index = 1:nrow(student_train)
+    oob_res = data.frame(train_index)
+    
+    for (i in 1:n_model) {
+        # select (with replacement) n observations to be in the bootstrap sample
+        # the rest are in the 'out-of-bag' sample
+        sample_index = sample(train_index,size=length(train_index),
+                              replace=T, set.seed(i+100))
+        oob_index = setdiff(train_index, sample_index)
+        
+        # select d variables to use
+        vars = sample(pred_vars, size=max_vars, replace=F, set.seed(i+200))
+        
+        new_sample = student[sample_index,c(vars, "G3")]
+        oob_sample = student[oob_index,c(vars, "G3")]
+        
+        # fit model on the bootstrap sample
+        new_model = rpart(formula = G3 ~ ., 
+                          data = new_sample, 
+                          method  = "anova")
+        
+        bagged_models=c(bagged_models,list(new_model))
+        
+        # predict on the out-of-bag sample
+        oob_pred = predict(new_model, newdata = oob_sample)
+        oob_pred = data.frame(index = oob_index, pred = oob_pred)
+        names(oob_pred) = c("train_index", paste0("tree_",i))
+        oob_res = left_join(oob_res, oob_pred, by = "train_index")
+        
+        #oob_res = merge(oob_res, oob_pred, by = "train_index", all = T)
+    }
+    
+    # oob prediction
+    # drop index (column 1), and average over bootstrap samples
+    oob_pred = rowMeans(oob_res[,-1], na.rm = T)
+    
+    # oob error
+    oob_error = mean((oob_pred - student_train$G3)**2, na.rm = T)
+    
+    return(list(bagged_models, oob_error))
+    
+}
+
+#n_model=100
+#max_vars = floor(sqrt(length(pred_vars)))
+
+```
+```{r}
+# predict on test data
+pred_randforest <- function(bagged_models) {
+    bagged_result=NULL
+    i=0
+    for (from_bag_model in bagged_models) {
+        if (is.null(bagged_result))
+            bagged_result=predict(from_bag_model,student_test)
+        else
+            bagged_result=(i*bagged_result+predict(from_bag_model,student_test))/(i+1)
+        i=i+1
+    }
+    
+    test_error = mean((bagged_result - student_test$G3)**2, na.rm = T)
+    return(test_error)
+}
+
+n_models = c(2:100) 
+oob_err = list()
+test_err = list()
+for (n in n_models) {
+    res = randforest(n_model = n)
+    
+    oob_err = list(oob_err, res[[2]])
+    #print(paste("OOB error:", oob_err))
+    
+    test_err = list(test_err, pred_randforest(res[[1]]))
+    #print(paste("Test error:", test_err))
+}
+
+oob_err = unlist(oob_err)
+test_err = unlist(test_err)
+
+errors <- data.frame(n_models, oob_err, test_err)
+
+# out of bag errors
+ggplot(errors) +
+    geom_path(aes(x=n_models, y=oob_err), color="red") +
+    ggtitle("OOB MSE vs. number of trees in forest")
+
+# test errors
+ggplot(errors) +
+    geom_path(aes(x=n_models, y=test_err), color="blue") +
+    ggtitle("Test MSE vs. function of trees in forest")
+
+```
+
