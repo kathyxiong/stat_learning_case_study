@@ -1,0 +1,185 @@
+---
+title: "Classification Trees and Forests"
+author: "Kathy Xiong"
+date: "March 26, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(dplyr)
+library(rsample)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+library(mlbench)
+library(missForest)
+```
+```{r}
+data("BostonHousing")
+head(BostonHousing)
+```
+```{r}
+# split into training and testing
+set.seed(123)
+house_split <- initial_split(BostonHousing, prop = .8)
+house_train <- training(house_split)
+house_test  <- testing(house_split) 
+```
+
+## Regression Tree
+
+```{r}
+# fit full tree
+reg_t1 <- rpart(formula = medv ~ .,
+                data    = house_train,
+                method  = "anova",
+                control = rpart.control(minsplit = 10, 
+                                        minbucket = 5,
+                                        cp = 0))
+
+plotcp(reg_t1)
+```
+```{r}
+# function to select optimal cp
+# from: https://stackoverflow.com/a/52502960
+cp.select <- function(big.tree) {
+  min.x <- which.min(big.tree$cptable[, 4]) #column 4 is xerror
+  for(i in 1:nrow(big.tree$cptable)) {
+    if(big.tree$cptable[i, 4] < big.tree$cptable[min.x, 4] + big.tree$cptable[min.x, 5])     return(big.tree$cptable[i, 1]) #column 5: xstd, column 1: cp 
+  }
+}
+
+# prune tree to optimal cp
+cp_best <- cp.select(reg_t1)
+reg_t2 <- prune(reg_t1, cp = cp_best)
+
+# print results
+print(reg_t2)
+```
+```{r}
+# visualized
+rpart.plot(reg_t2)
+```
+
+```{r}
+# detailed summary
+summary(reg_t2)
+```
+
+```{r}
+# get training and testing errors - should we compare for different cp?
+
+# training
+pred_train <- predict(reg_t2, house_train)
+mse_train <- mean((pred_train - house_train$medv)**2)
+
+var_train <- var(house_train$medv)*length(house_train$medv-1)/length(house_train$medv)
+r2_train <- 1-mse_train/var_train
+
+# testing
+pred_test <- predict(reg_t2, house_test)
+mse_test <- mean((pred_test - house_test$medv)**2)
+
+var_test <- var(house_test$medv)*length(house_test$medv-1)/length(house_test$medv)
+r2_test <- 1-mse_test/var_test
+
+# print
+print(paste("Training MSE: ", mse_train, ", R-sqr: ", r2_train))
+print(paste("Testing MSE: ", mse_test, ", R-sqr: ", r2_test))
+```
+```{r}
+reg_t2$variable.importance # plot it
+```
+
+## Random Forest
+
+```{r}
+sapply(BostonHousing, function(x) {sum(is.na(x))})
+```
+```{r}
+# train a forest with default settings
+set.seed(123)
+
+reg_rf1 <- randomForest(
+  formula = medv ~ .,
+  data    = house_train
+)
+
+# plot error rate
+plot(reg_rf1)
+```
+
+```{r}
+# tune RF
+oob_errs <- list()
+m = ncol(house_train) - 1
+for (i in 1:m) {
+    set.seed(100+i)
+    reg_rf <- randomForest(
+      formula = medv ~ .,
+      data    = house_train,
+      #n_trees = 100,
+      mtry    = i
+    )
+    oob_errs[[i]] <- reg_rf$mse
+}
+
+cols <- colorRampPalette(c("red", "blue"))(m)
+for (i in 1:m) {
+    if (i == 1) {
+        plot(x = 1:500, y = oob_errs[[i]], type = "l", col = cols[i], ylim=c(10,30))
+    } else {
+        lines(x = 1:500, y = oob_errs[[i]], col = cols[i])
+    }
+    #text(x = 510, y = oob_errs[[i]][500], labels = paste(i), col=cols[i])
+    legend("topright", legend=1:m, col=cols, lty=1, cex = 0.5)
+}
+```
+```{r}
+# get mtry corresponding to the minimum MSE for a forest with 100 trees
+test <- data.frame(oob_errs)
+colnames(test) <- NULL
+which.min(test[100,])
+```
+
+
+```{r}
+# grow optimal forest
+reg_rf2 <- randomForest(
+  formula = medv ~ .,
+  data  = house_train,
+  ntree = 100,
+  mtry  = 4 
+)
+```
+
+```{r}
+# get training and testing errors
+
+# training
+pred_train <- predict(reg_rf2, house_train)
+mse_train <- mean((pred_train - house_train$medv)**2)
+
+var_train <- var(house_train$medv)*length(house_train$medv-1)/length(house_train$medv)
+r2_train <- 1-mse_train/var_train
+
+# testing
+pred_test <- predict(reg_rf2, house_test)
+mse_test <- mean((pred_test - house_test$medv)**2)
+
+var_test <- var(house_test$medv)*length(house_test$medv-1)/length(house_test$medv)
+r2_test <- 1-mse_test/var_test
+
+# print
+print(paste("Training MSE: ", mse_train, ", R-sqr: ", r2_train))
+print(paste("Testing MSE: ", mse_test, ", R-sqr: ", r2_test))
+```
+```{r}
+importance(reg_rf2)
+varImpPlot(reg_rf2) # how to get the other kind of importance?
+```
