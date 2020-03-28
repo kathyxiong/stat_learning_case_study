@@ -18,6 +18,7 @@ library(randomForest)
 library(caret)
 library(mlbench)
 library(missForest)
+library(glmnet)
 ```
 ```{r}
 data("BreastCancer")
@@ -181,3 +182,95 @@ importance(clf_rf2)
 varImpPlot(clf_rf2) # plot the other kind of importance?
 ```
 
+## Comparison with Linear Models
+
+```{r}
+# treat all variables as factors
+x_train <- model.matrix(Class~., cancer_train)[,-1] # create dummies
+y_train <- as.character(cancer_train$Class)
+y_train <- ifelse(y_train == "benign", 1, 0) # code outcome as 1-0
+
+x_test <- model.matrix(Class~., cancer_test)[,-1] # create dummies
+y_test <- as.character(cancer_test$Class)
+y_test <- ifelse(y_test == "benign", 1, 0) # code outcome as 1-0
+```
+
+```{r}
+# logistic reg with no regularization
+# cancer_train_lreg <- data.frame(cbind(x_train, Class = y_train))
+# clf_lreg <- glm(Class ~., data = cancer_train_lreg, family = "binomial")
+
+# logistic reg with ridge penalty
+set.seed(123)
+cv.ridge <- cv.glmnet(x = x_train, 
+                      y = y_train, 
+                      family = "binomial", 
+                      alpha = 0)
+
+clf_lreg_ridge <- glmnet(x = x_train, 
+                         y = y_train,
+                         alpha = 0, 
+                         family = "binomial",
+                         lambda = cv.ridge$lambda.min)
+
+# get training and testing errors
+
+# training
+pred_train <- predict(clf_lreg_ridge, x_train, type = "class")
+pred_train <- as.numeric(pred_train)
+conf_train <- confusionMatrix(data = factor(pred_train, levels = c(1,0)), 
+                              reference = factor(y_train, levels = c(1,0)))
+
+# testing
+pred_test <- predict(clf_lreg_ridge, x_test, type = "class")
+pred_test <- as.numeric(pred_test)
+conf_test <- confusionMatrix(data = factor(pred_test, levels = c(1,0)), 
+                              reference = factor(y_test, levels = c(1,0)))
+
+# print
+print(paste("Training Sensitivity: ", round(conf_train$byClass["Sensitivity"], 2), ",",
+            "Specificity: ", round(conf_train$byClass["Specificity"], 2)))
+
+print(paste("Testing Sensitivity: ", round(conf_test$byClass["Sensitivity"], 2), ",",
+            "Specificity: ", round(conf_test$byClass["Specificity"], 2)))
+```
+
+```{r}
+# logistic reg with no regularization
+# cancer_train_lreg <- data.frame(cbind(x_train, Class = y_train))
+# clf_lreg <- glm(Class ~., data = cancer_train_lreg, family = "binomial")
+
+# logistic reg with lasso penalty
+set.seed(123)
+cv.lasso <- cv.glmnet(x = x_train, 
+                      y = y_train, 
+                      family = "binomial", 
+                      alpha = 1)
+
+clf_lreg_lasso <- glmnet(x = x_train, 
+                         y = y_train,
+                         alpha = 1, 
+                         family = "binomial",
+                         lambda = cv.lasso$lambda.min)
+
+# get training and testing errors
+
+# training
+pred_train <- predict(clf_lreg_lasso, x_train, type = "class")
+pred_train <- as.numeric(pred_train)
+conf_train <- confusionMatrix(data = factor(pred_train, levels = c(1,0)), 
+                              reference = factor(y_train, levels = c(1,0)))
+
+# testing
+pred_test <- predict(clf_lreg_lasso, x_test, type = "class")
+pred_test <- as.numeric(pred_test)
+conf_test <- confusionMatrix(data = factor(pred_test, levels = c(1,0)), 
+                              reference = factor(y_test, levels = c(1,0)))
+
+# print
+print(paste("Training Sensitivity: ", round(conf_train$byClass["Sensitivity"], 2), ",",
+            "Specificity: ", round(conf_train$byClass["Specificity"], 2)))
+
+print(paste("Testing Sensitivity: ", round(conf_test$byClass["Sensitivity"], 2), ",",
+            "Specificity: ", round(conf_test$byClass["Specificity"], 2)))
+```
