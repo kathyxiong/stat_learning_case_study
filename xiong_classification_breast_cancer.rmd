@@ -27,6 +27,12 @@ head(BreastCancer)
 # drop unused vars
 cancer <- select(BreastCancer, -Id)
 
+# complete cases only
+sapply(cancer, function(x) {sum(is.na(x))})
+
+cancer <- cancer[!is.na(cancer$Bare.nuclei),]
+```
+```{r}
 # split into training and testing
 set.seed(123)
 cancer_split <- initial_split(cancer, prop = .8)
@@ -38,128 +44,138 @@ cancer_test  <- testing(cancer_split)
 
 ```{r}
 # default controls
-clft1 <- rpart(formula = Class ~ .,
-                data    = cancer_train,
-                method  = "class")
-
-print(clft1)
-```
-```{r}
-clft1_res <- summary(clft1)
-clft1_varImp <- clft1_res$variable.importance # also counts surrogates
-```
-
-```{r}
-rpart.plot(clft1)
-```
-```{r}
-plotcp(clft1)
-```
-```{r}
-# untrimmed tree
-clft2 <- rpart(formula = Class ~ .,
+clf_t1 <- rpart(formula = Class ~ .,
                 data    = cancer_train,
                 method  = "class",
-                control = rpart.control(minsplit = 2, minbucket = 1, cp = 0))
+                control = rpart.control(minsplit = 2, 
+                                        minbucket = 1,
+                                        cp = 0))
 
-plotcp(clft2)
-clft2$cptable
+plotcp(clf_t1)
+```
+```{r}
+# function to select optimal cp
+# from: https://stackoverflow.com/a/52502960
+cp.select <- function(big.tree) {
+  min.x <- which.min(big.tree$cptable[, 4]) #column 4 is xerror
+  for(i in 1:nrow(big.tree$cptable)) {
+    if(big.tree$cptable[i, 4] < big.tree$cptable[min.x, 4] + big.tree$cptable[min.x, 5])     return(big.tree$cptable[i, 1]) #column 5: xstd, column 1: cp 
+  }
+}
+
+# prune tree to optimal cp
+cp_best <- cp.select(clf_t1)
+clf_t2 <- prune(clf_t1, cp = cp_best)
+
+# print results
+print(clf_t2)
 ```
 
 ```{r}
-# trimmed tree
-cptable <- clft2$cptable
-cp_best <- cptable[2,"CP"]
-
-clft3 <- rpart(formula = Class ~ .,
-                data    = cancer_train,
-                method  = "class",
-                control = rpart.control(minsplit = 2, minbucket = 1, cp = cp_best))
-
-rpart.plot(clft3)
+# visualized
+rpart.plot(clf_t2)
 ```
 ```{r}
-# predict on test set
-clft3_pred = predict(clft3, newdata = cancer_test, type = "class")
-
-# misclassification error
-confusionMatrix(data = clft3_pred, reference = cancer_test$Class)
+# detailed summary
+summary(clf_t2)
 ```
 ```{r}
-#set.seed(123)
-# clfrf1 <- randomForest(
-#   formula = Class ~ .,
-#   data    = cancer_train
-# )
+# get training and testing errors
 
-sapply(cancer, function(x) {sum(is.na(x))})
+# training
+pred_train <- predict(clf_t2, cancer_train, type = "class")
+conf_train <- confusionMatrix(data = pred_train, reference = cancer_train$Class)
+
+# testing
+pred_test <- predict(clf_t2, cancer_test, type = "class")
+conf_test <- confusionMatrix(data = pred_test, reference = cancer_test$Class)
+
+# print
+print(paste("Training Sensitivity: ", round(conf_train$byClass["Sensitivity"], 2), ",",
+            "Specificity: ", round(conf_train$byClass["Specificity"], 2)))
+
+print(paste("Testing Sensitivity: ", round(conf_test$byClass["Sensitivity"], 2), ",",
+            "Specificity: ", round(conf_test$byClass["Specificity"], 2)))
 ```
 ```{r}
-# impute training set
-cancer_train_mf <- missForest(cancer_train)
-cancer_train_imp <- cancer_train_mf$ximp
+clf_t2$variable.importance # plot it
+```
 
-# impute testing set
-cancer_test_mf <- missForest(cancer_test)
-cancer_test_imp <- cancer_test_mf$ximp
+## Random Forest
 
+```{r}
 # train a forest with default settings
 set.seed(123)
 
 clf_rf1 <- randomForest(
   formula = Class ~ .,
-  data    = cancer_train_imp
+  data    = cancer_train
 )
 
-clf_rf1_pred <- predict(clf_rf1, cancer_test_imp)
-
-# misclassification error
-confusionMatrix(data = clf_rf1_pred, reference = cancer_test_imp$Class)
-```
-```{r}
-# plot OOB error
-oob_err <- clf_rf1$err.rate[,1]
-
-plot(x = seq_along(oob_err), oob_err, type = "l")
-plot(clf_rf1)
+# plot error rate
+plot(clf_rf1) # add legend
 ```
 ```{r}
 # tune RF
 oob_errs <- list()
-for (i in 1:9) {
+m = ncol(cancer_train) - 1
+for (i in 1:m) {
+    set.seed(100+i)
     clf_rf <- randomForest(
       formula = Class ~ .,
-      data    = cancer_train_imp,
-      mtry = i
+      data    = cancer_train,
+      #n_trees = 100,
+      mtry    = i
     )
-    oob_errs[[i]] <- clf_rf$err.rate[,1]
+    oob_errs[[i]] <- (clf_rf$err.rate[,2] + clf_rf$err.rate[,3])/2 # balanced accuracy
 }
 
-cols <- colorRampPalette(c("red", "blue"))(9)
-for (i in 1:9) {
+cols <- colorRampPalette(c("red", "blue"))(m)
+for (i in 1:m) {
     if (i == 1) {
-        plot(x = 1:500, y = oob_errs[[i]], type = "l", col = cols[i])
+        plot(x = 1:500, y = oob_errs[[i]], type = "l", col = cols[i], ylim=c(0,0.1))
     } else {
         lines(x = 1:500, y = oob_errs[[i]], col = cols[i])
     }
-    text(x = 510, y = oob_errs[[i]][500], labels = paste(i), col=cols[i])
+    #text(x = 510, y = oob_errs[[i]][500], labels = paste(i), col=cols[i])
+    legend("topright", legend=1:m, col=cols, lty=1, cex = 0.5)
 }
+```
+```{r}
+# get mtry corresponding to the minimum MSE for a forest with 100 trees
+test <- data.frame(oob_errs)
+colnames(test) <- NULL
+which.min(test[100,])
 ```
 
 ```{r}
-
+# grow optimal forest
 clf_rf2 <- randomForest(
   formula = Class ~ .,
-  data = cancer_train_imp,
-  ntree = 200,
-  mtry = 3 
+  data = cancer_train,
+  ntree = 100,
+  mtry = 1 
 )
-
-clf_rf2_pred <- predict(clf_rf2, cancer_test_imp)
-
-# misclassification error
-confusionMatrix(data = clf_rf2_pred, reference = cancer_test_imp$Class)
 ```
+```{r}
+# get training and testing errors
+
+# training
+pred_train <- predict(clf_rf2, cancer_train, type = "class")
+conf_train <- confusionMatrix(data = pred_train, reference = cancer_train$Class)
+
+# testing
+pred_test <- predict(clf_rf2, cancer_test, type = "class")
+conf_test <- confusionMatrix(data = pred_test, reference = cancer_test$Class)
+
+# print
+print(paste("Training Sensitivity: ", round(conf_train$byClass["Sensitivity"], 2), ",",
+            "Specificity: ", round(conf_train$byClass["Specificity"], 2)))
+
+print(paste("Testing Sensitivity: ", round(conf_test$byClass["Sensitivity"], 2), ",",
+            "Specificity: ", round(conf_test$byClass["Specificity"], 2)))
+```
+
 ```{r}
 importance(clf_rf2)
 varImpPlot(clf_rf2) # plot the other kind of importance?

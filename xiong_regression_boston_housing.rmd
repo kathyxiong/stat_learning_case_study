@@ -72,7 +72,7 @@ summary(reg_t2)
 ```
 
 ```{r}
-# get training and testing errors - should we compare for different cp?
+# get training and testing errors
 
 # training
 pred_train <- predict(reg_t2, house_train)
@@ -146,7 +146,6 @@ test <- data.frame(oob_errs)
 colnames(test) <- NULL
 which.min(test[100,])
 ```
-
 
 ```{r}
 # grow optimal forest
